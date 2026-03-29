@@ -36,15 +36,6 @@
   const auth = getAuth(app);
   const db  = getFirestore(app);
 
-  // ── Collections ──────────────────────────────────────
-  const reportsCol  = collection(db, "sib_reports");
-  const trainersCol = collection(db, "sib_trainers");
-
-
-  // ── Collections ──────────────────────────────────────
-  const reportsCol  = collection(db, "sib_reports");
-  const trainersCol = collection(db, "sib_trainers");
-
   // ── AUTH STATE ───────────────────────────────────────
   onAuthStateChanged(auth, (user) => {
     if (user) {
@@ -142,10 +133,11 @@
     await signOut(auth);
   };
 
-  // Enter key on password field
+  // Wire up login button and enter key (module loads async so we do it here, not via onclick="")
   document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('li-btn')?.addEventListener('click', () => window.doLogin());
     document.getElementById('li-pass')?.addEventListener('keydown', e => {
-      if (e.key === 'Enter') doLogin();
+      if (e.key === 'Enter') window.doLogin();
     });
     document.getElementById('li-email')?.addEventListener('keydown', e => {
       if (e.key === 'Enter') document.getElementById('li-pass').focus();
@@ -392,7 +384,7 @@
       <label class="login-label">Password</label>
       <input type="password" id="li-pass" class="login-input" placeholder="Enter your password" autocomplete="current-password">
     </div>
-    <button id="li-btn" class="login-btn" onclick="doLogin()">Sign In</button>
+    <button id="li-btn" class="login-btn">Sign In</button>
   </div>
 </div>
 
@@ -1093,14 +1085,20 @@ function initDashboard(){
   window._dashReady=true;
 }
 // Keep local mirror vars in sync when Firestore listeners update window.reports / window.trainers
-Object.defineProperty(window,"reports",{
-  get:function(){return window._reports||[];},
-  set:function(v){window._reports=v;reports=v;}
-});
-Object.defineProperty(window,"trainers",{
-  get:function(){return window._trainers||[];},
-  set:function(v){window._trainers=v;trainers=v;}
-});
+try {
+  Object.defineProperty(window,"reports",{
+    configurable:true,
+    get:function(){return window._reports||[];},
+    set:function(v){window._reports=v;reports=v;}
+  });
+} catch(e){}
+try {
+  Object.defineProperty(window,"trainers",{
+    configurable:true,
+    get:function(){return window._trainers||[];},
+    set:function(v){window._trainers=v;trainers=v;}
+  });
+} catch(e){}
 </script>
 </div><!-- /app-root -->
 </body>
