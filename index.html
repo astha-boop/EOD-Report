@@ -14,14 +14,17 @@
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
   import {
+    getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged
+  } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+  import {
     getFirestore, collection, doc, addDoc, getDocs, deleteDoc,
     onSnapshot, query, orderBy, setDoc, serverTimestamp
   } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
-  
   const firebaseConfig = {
     apiKey:            "AIzaSyAJncLEkZwdsk5_w_msyrE4wZpZP9fOMr8",
     authDomain:        "skillinabox-63ad8.firebaseapp.com",
+    databaseURL:       "https://skillinabox-63ad8-default-rtdb.asia-southeast1.firebasedatabase.app",
     projectId:         "skillinabox-63ad8",
     storageBucket:     "skillinabox-63ad8.firebasestorage.app",
     messagingSenderId: "609328568989",
@@ -30,79 +33,124 @@
   };
 
   const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
   const db  = getFirestore(app);
 
   // ── Collections ──────────────────────────────────────
   const reportsCol  = collection(db, "sib_reports");
   const trainersCol = collection(db, "sib_trainers");
 
-  // ── Expose DB helpers to global scope ────────────────
-  window._fb = {
-    db, reportsCol, trainersCol,
-    addDoc, getDocs, deleteDoc, onSnapshot,
-    query, orderBy, doc, setDoc, serverTimestamp
-  };
 
-  // ── Real-time listener: reports ───────────────────────
-  onSnapshot(query(reportsCol, orderBy("timestamp","desc")), snap => {
-    window.reports = snap.docs.map(d => ({ _docId: d.id, ...d.data() }));
-    if (window._dashReady) {
-      renderDashboard();
-      renderHistory();
-    }
-  });
+  // ── Collections ──────────────────────────────────────
+  const reportsCol  = collection(db, "sib_reports");
+  const trainersCol = collection(db, "sib_trainers");
 
-  // ── Real-time listener: trainers ──────────────────────
-  onSnapshot(trainersCol, snap => {
-    if (snap.empty) {
-      // First run — seed default trainers into Firestore
-      Promise.all(
-        DEFAULT_TRAINERS.map(t =>
-          setDoc(doc(db, "sib_trainers", t.name.replace(/\s+/g,"_")), t)
-        )
-      );
-      window.trainers = JSON.parse(JSON.stringify(DEFAULT_TRAINERS));
+  // ── AUTH STATE ───────────────────────────────────────
+  onAuthStateChanged(auth, (user) => {
+    if (user) {
+      window._currentUser = user;
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('app-root').style.display = '';
+      // Start Firestore listeners only after login
+      startFirestoreListeners();
     } else {
-      window.trainers = snap.docs.map(d => ({ _docId: d.id, ...d.data() }));
+      window._currentUser = null;
+      document.getElementById('login-screen').style.display = 'flex';
+      document.getElementById('app-root').style.display = 'none';
     }
-    if (window._dashReady) renderTrainers();
   });
 
-  // ── Save a new report ─────────────────────────────────
-  window.saveReport = async function(reportObj) {
+  function startFirestoreListeners() {
+    const reportsCol  = collection(db, "sib_reports");
+    const trainersCol = collection(db, "sib_trainers");
+
+    window._fb = {
+      db, reportsCol, trainersCol,
+      addDoc, getDocs, deleteDoc, onSnapshot,
+      query, orderBy, doc, setDoc, serverTimestamp
+    };
+
+    onSnapshot(query(reportsCol, orderBy("timestamp","desc")), snap => {
+      window.reports = snap.docs.map(d => ({ _docId: d.id, ...d.data() }));
+      if (window._dashReady) { renderDashboard(); renderHistory(); }
+    });
+
+    onSnapshot(trainersCol, snap => {
+      if (snap.empty) {
+        Promise.all(DEFAULT_TRAINERS.map(t =>
+          setDoc(doc(db, "sib_trainers", t.name.replace(/\s+/g,"_")), t)
+        ));
+        window.trainers = JSON.parse(JSON.stringify(DEFAULT_TRAINERS));
+      } else {
+        window.trainers = snap.docs.map(d => ({ _docId: d.id, ...d.data() }));
+      }
+      if (window._dashReady) renderTrainers();
+    });
+
+    window.saveReport = async function(reportObj) {
+      try {
+        await addDoc(reportsCol, { ...reportObj, timestamp: serverTimestamp() });
+        return true;
+      } catch(e) { showToast("⚠ Could not save to database."); return false; }
+    };
+
+    window.saveTrainerToDb = async function(trainer) {
+      try {
+        const key = trainer.name.replace(/\s+/g,"_");
+        await setDoc(doc(db, "sib_trainers", key), { name: trainer.name, role: trainer.role || "Trainer" });
+      } catch(e) { showToast("⚠ Could not save trainer."); }
+    };
+
+    window.deleteTrainerFromDb = async function(docId) {
+      try {
+        await deleteDoc(doc(db, "sib_trainers", docId));
+      } catch(e) { showToast("⚠ Could not delete trainer."); }
+    };
+
+    window._dashReady = false;
+    // Init dashboard after auth
+    setTimeout(() => {
+      if (typeof initDashboard === 'function') initDashboard();
+    }, 100);
+  }
+
+  // Login / Logout exposed globally
+  window.doLogin = async function() {
+    const email = document.getElementById('li-email').value.trim();
+    const pass  = document.getElementById('li-pass').value;
+    const errEl = document.getElementById('li-err');
+    const btn   = document.getElementById('li-btn');
+    if (!email || !pass) { errEl.textContent = 'Please enter email and password.'; errEl.style.display='block'; return; }
+    btn.textContent = 'Signing in…'; btn.disabled = true;
     try {
-      await addDoc(reportsCol, { ...reportObj, timestamp: serverTimestamp() });
-      return true;
+      await signInWithEmailAndPassword(auth, email, pass);
+      errEl.style.display = 'none';
     } catch(e) {
-      console.error("Firebase save report failed:", e);
-      showToast("⚠ Could not save to database.");
-      return false;
-    }
+      const msgs = {
+        'auth/user-not-found': 'No account with this email.',
+        'auth/wrong-password': 'Incorrect password.',
+        'auth/invalid-email':  'Invalid email address.',
+        'auth/invalid-credential': 'Invalid email or password.',
+        'auth/too-many-requests': 'Too many attempts. Try again later.'
+      };
+      errEl.textContent = msgs[e.code] || 'Login failed. Check your credentials.';
+      errEl.style.display = 'block';
+    } finally { btn.textContent = 'Sign In'; btn.disabled = false; }
   };
 
-  // ── Save / update a trainer ───────────────────────────
-  window.saveTrainerToDb = async function(trainer) {
-    try {
-      const key = trainer.name.replace(/\s+/g,"_");
-      await setDoc(doc(db, "sib_trainers", key), { name: trainer.name, role: trainer.role || "Trainer" });
-    } catch(e) {
-      console.error("Firebase save trainer failed:", e);
-      showToast("⚠ Could not save trainer.");
-    }
+  window.doLogout = async function() {
+    await signOut(auth);
   };
 
-  // ── Delete a trainer ──────────────────────────────────
-  window.deleteTrainerFromDb = async function(docId) {
-    try {
-      await deleteDoc(doc(db, "sib_trainers", docId));
-    } catch(e) {
-      console.error("Firebase delete trainer failed:", e);
-      showToast("⚠ Could not delete trainer.");
-    }
-  };
-
-  // Mark app ready so listeners can trigger renders
-  window._dashReady = false;
+  // Enter key on password field
+  document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('li-pass')?.addEventListener('keydown', e => {
+      if (e.key === 'Enter') doLogin();
+    });
+    document.getElementById('li-email')?.addEventListener('keydown', e => {
+      if (e.key === 'Enter') document.getElementById('li-pass').focus();
+    });
+  });
 </script>
 <style>
   :root {
@@ -305,9 +353,51 @@
   .empty-icon{font-size:36px;margin-bottom:14px;}
   .empty-title{color:var(--text2);font-size:15px;font-weight:500;margin-bottom:6px;font-family:"Syne",sans-serif;}
   @media(max-width:860px){.layout{grid-template-columns:1fr;}.sidebar{display:none;}.page{padding:20px 16px;}.metrics-row{grid-template-columns:repeat(2,1fr);}.form-grid{grid-template-columns:1fr;}}
+
+  /* ── LOGIN SCREEN ── */
+  .login-box{width:100%;max-width:400px;padding:44px 40px;background:var(--navy2);border:1px solid var(--border2);border-radius:var(--radius-xl);box-shadow:0 20px 60px rgba(0,0,0,0.5);}
+  .login-logo{margin-bottom:28px;}
+  .login-title{font-family:"Syne",sans-serif;font-size:22px;font-weight:700;color:var(--text);text-align:center;margin-bottom:6px;}
+  .login-sub{font-size:12px;color:var(--text3);text-align:center;margin-bottom:28px;}
+  .login-err{display:none;padding:11px 16px;background:var(--red-dim);border:1px solid rgba(255,77,106,0.35);border-radius:var(--radius-sm);color:var(--red);font-size:12px;margin-bottom:20px;text-align:center;}
+  .login-field{margin-bottom:18px;}
+  .login-label{display:block;font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:1.2px;margin-bottom:7px;}
+  .login-input{width:100%;padding:11px 14px;background:var(--navy3);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-size:13px;font-family:"Outfit",sans-serif;outline:none;transition:border-color .15s;}
+  .login-input:focus{border-color:var(--cyan);box-shadow:0 0 0 3px var(--cyan-dim);}
+  .login-input::placeholder{color:var(--text3);}
+  .login-btn{width:100%;padding:13px;background:linear-gradient(135deg,var(--orange),var(--orange2));border:none;border-radius:var(--radius-sm);color:#fff;font-size:14px;font-weight:600;font-family:"Outfit",sans-serif;cursor:pointer;transition:all .2s;margin-top:6px;}
+  .login-btn:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(255,107,43,0.4);}
+  .login-btn:disabled{opacity:0.6;cursor:not-allowed;transform:none;}
+  /* ── LOGOUT BTN ── */
+  .logout-btn{width:100%;margin-top:10px;padding:8px;background:transparent;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text3);font-size:11px;font-family:"Outfit",sans-serif;cursor:pointer;transition:all .15s;}
+  .logout-btn:hover{background:var(--red-dim);border-color:rgba(255,77,106,0.3);color:var(--red);}
 </style>
 </head>
 <body>
+
+<!-- ===== LOGIN SCREEN ===== -->
+<div id="login-screen" style="display:flex;position:fixed;inset:0;align-items:center;justify-content:center;background:var(--navy);z-index:9999;">
+  <div class="login-box">
+    <div class="login-logo">
+      <img src="https://i.ibb.co/ZBBjhYs/sib-logo-horizontal-dark.png" alt="Skill in a Box" style="height:48px;width:auto;display:block;margin:0 auto;">
+    </div>
+    <h1 class="login-title">Trainer Dashboard</h1>
+    <p class="login-sub">Sign in to access your workspace</p>
+    <div id="li-err" class="login-err"></div>
+    <div class="login-field">
+      <label class="login-label">Email</label>
+      <input type="email" id="li-email" class="login-input" placeholder="your@email.com" autocomplete="email">
+    </div>
+    <div class="login-field">
+      <label class="login-label">Password</label>
+      <input type="password" id="li-pass" class="login-input" placeholder="Enter your password" autocomplete="current-password">
+    </div>
+    <button id="li-btn" class="login-btn" onclick="doLogin()">Sign In</button>
+  </div>
+</div>
+
+<!-- ===== MAIN APP ===== -->
+<div id="app-root" style="display:none">
 <div class="toast" id="toast"></div>
 <div class="modal-overlay" id="del-modal">
   <div class="modal">
@@ -350,9 +440,12 @@
       </button>
     </nav>
     <div class="sidebar-footer">
-      <div class="live-chip">Live</div>
-      <div id="fb-status" style="display:inline-flex;align-items:center;gap:5px;background:rgba(0,229,160,0.1);color:var(--green);padding:3px 10px;border-radius:99px;font-size:10px;font-weight:500;border:1px solid rgba(0,229,160,0.2);margin-bottom:6px;margin-left:6px;"><span style="width:5px;height:5px;border-radius:50%;background:var(--green);display:inline-block;"></span>Firebase</div>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+        <div class="live-chip">Live</div>
+        <div id="fb-status" style="display:inline-flex;align-items:center;gap:5px;background:rgba(0,229,160,0.1);color:var(--green);padding:3px 10px;border-radius:99px;font-size:10px;font-weight:500;border:1px solid rgba(0,229,160,0.2);"><span style="width:5px;height:5px;border-radius:50%;background:var(--green);display:inline-block;"></span>Firebase</div>
+      </div>
       <div class="sidebar-date" id="sidebar-date"></div>
+      <button onclick="doLogout()" class="logout-btn">&#x2192; Sign Out</button>
     </div>
   </aside>
 
@@ -991,13 +1084,14 @@ function addTrainer(){
   window.saveTrainerToDb(newT); // Firestore write; listener will update trainers[]
   nameEl.value="";roleEl.value="";showToast(name+" added!");
 }
-document.getElementById("f-date").value=todayStr();
-document.getElementById("dash-date").value=todayStr();
-var now=new Date();
-document.getElementById("sidebar-date").textContent=now.toLocaleDateString("en-IN",{weekday:"long",day:"numeric",month:"short",year:"numeric"});
-populateDropdowns();addTask();renderDashboard();renderBenchmarks();
-// Signal that the app is ready so Firestore listeners can trigger re-renders
-window._dashReady=true;
+function initDashboard(){
+  document.getElementById("f-date").value=todayStr();
+  document.getElementById("dash-date").value=todayStr();
+  var now=new Date();
+  document.getElementById("sidebar-date").textContent=now.toLocaleDateString("en-IN",{weekday:"long",day:"numeric",month:"short",year:"numeric"});
+  populateDropdowns();addTask();renderDashboard();renderBenchmarks();
+  window._dashReady=true;
+}
 // Keep local mirror vars in sync when Firestore listeners update window.reports / window.trainers
 Object.defineProperty(window,"reports",{
   get:function(){return window._reports||[];},
@@ -1008,5 +1102,6 @@ Object.defineProperty(window,"trainers",{
   set:function(v){window._trainers=v;trainers=v;}
 });
 </script>
+</div><!-- /app-root -->
 </body>
 </html>
