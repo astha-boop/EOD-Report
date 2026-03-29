@@ -5,21 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Skill in a Box — Trainer EOD Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
-<!-- =====================================================
-     FIREBASE CONFIGURATION
-     Replace the placeholder values below with your
-     actual Firebase project config from:
-     Firebase Console → Project Settings → Your Apps
-     ===================================================== -->
+
+<!-- FIREBASE MODULE: Auth + Firestore -->
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-  import {
-    getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged
-  } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-  import {
-    getFirestore, collection, doc, addDoc, getDocs, deleteDoc,
-    onSnapshot, query, orderBy, setDoc, serverTimestamp
-  } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+  import { getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query, orderBy, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
   const firebaseConfig = {
     apiKey:            "AIzaSyAJncLEkZwdsk5_w_msyrE4wZpZP9fOMr8",
@@ -32,118 +23,105 @@
     measurementId:     "G-NYL891594J"
   };
 
-  const app = initializeApp(firebaseConfig);
+  const app  = initializeApp(firebaseConfig);
   const auth = getAuth(app);
-  const db  = getFirestore(app);
+  const db   = getFirestore(app);
+  const reportsCol  = collection(db, "sib_reports");
+  const trainersCol = collection(db, "sib_trainers");
 
-  // ── AUTH STATE ───────────────────────────────────────
+  let listenersStarted = false;
+
+  // ── AUTH STATE HANDLER ───────────────────────────────
   onAuthStateChanged(auth, (user) => {
     if (user) {
-      window._currentUser = user;
       document.getElementById('login-screen').style.display = 'none';
-      document.getElementById('app-root').style.display = '';
-      // Start Firestore listeners only after login
-      startFirestoreListeners();
+      document.getElementById('app-root').style.display    = '';
+      if (!listenersStarted) {
+        listenersStarted = true;
+        startListeners();
+      }
     } else {
-      window._currentUser = null;
       document.getElementById('login-screen').style.display = 'flex';
-      document.getElementById('app-root').style.display = 'none';
+      document.getElementById('app-root').style.display    = 'none';
     }
   });
 
-  function startFirestoreListeners() {
-    const reportsCol  = collection(db, "sib_reports");
-    const trainersCol = collection(db, "sib_trainers");
-
-    window._fb = {
-      db, reportsCol, trainersCol,
-      addDoc, getDocs, deleteDoc, onSnapshot,
-      query, orderBy, doc, setDoc, serverTimestamp
+  function startListeners() {
+    // Expose write helpers globally
+    window.saveReport = async (obj) => {
+      try { await addDoc(reportsCol, { ...obj, timestamp: serverTimestamp() }); return true; }
+      catch(e) { showToast("⚠ Could not save report."); return false; }
+    };
+    window.saveTrainerToDb = async (t) => {
+      try { await setDoc(doc(db, "sib_trainers", t.name.replace(/\s+/g,"_")), { name:t.name, role:t.role||"Trainer" }); }
+      catch(e) { showToast("⚠ Could not save trainer."); }
+    };
+    window.deleteTrainerFromDb = async (id) => {
+      try { await deleteDoc(doc(db, "sib_trainers", id)); }
+      catch(e) { showToast("⚠ Could not delete trainer."); }
     };
 
+    // Real-time reports listener
     onSnapshot(query(reportsCol, orderBy("timestamp","desc")), snap => {
-      window.reports = snap.docs.map(d => ({ _docId: d.id, ...d.data() }));
+      window._reports = snap.docs.map(d => ({ _docId: d.id, ...d.data() }));
       if (window._dashReady) { renderDashboard(); renderHistory(); }
     });
 
+    // Real-time trainers listener
     onSnapshot(trainersCol, snap => {
       if (snap.empty) {
         Promise.all(DEFAULT_TRAINERS.map(t =>
           setDoc(doc(db, "sib_trainers", t.name.replace(/\s+/g,"_")), t)
         ));
-        window.trainers = JSON.parse(JSON.stringify(DEFAULT_TRAINERS));
+        window._trainers = JSON.parse(JSON.stringify(DEFAULT_TRAINERS));
       } else {
-        window.trainers = snap.docs.map(d => ({ _docId: d.id, ...d.data() }));
+        window._trainers = snap.docs.map(d => ({ _docId: d.id, ...d.data() }));
       }
       if (window._dashReady) renderTrainers();
     });
 
-    window.saveReport = async function(reportObj) {
-      try {
-        await addDoc(reportsCol, { ...reportObj, timestamp: serverTimestamp() });
-        return true;
-      } catch(e) { showToast("⚠ Could not save to database."); return false; }
-    };
-
-    window.saveTrainerToDb = async function(trainer) {
-      try {
-        const key = trainer.name.replace(/\s+/g,"_");
-        await setDoc(doc(db, "sib_trainers", key), { name: trainer.name, role: trainer.role || "Trainer" });
-      } catch(e) { showToast("⚠ Could not save trainer."); }
-    };
-
-    window.deleteTrainerFromDb = async function(docId) {
-      try {
-        await deleteDoc(doc(db, "sib_trainers", docId));
-      } catch(e) { showToast("⚠ Could not delete trainer."); }
-    };
-
-    window._dashReady = false;
-    // Init dashboard after auth
-    setTimeout(() => {
-      if (typeof initDashboard === 'function') initDashboard();
-    }, 100);
+    // Init dashboard UI (slight delay lets DOM settle)
+    setTimeout(() => { initDashboard(); }, 150);
   }
 
-  // Login / Logout exposed globally
-  window.doLogin = async function() {
+  // ── LOGIN ────────────────────────────────────────────
+  async function doLoginFn() {
     const email = document.getElementById('li-email').value.trim();
     const pass  = document.getElementById('li-pass').value;
     const errEl = document.getElementById('li-err');
     const btn   = document.getElementById('li-btn');
-    if (!email || !pass) { errEl.textContent = 'Please enter email and password.'; errEl.style.display='block'; return; }
-    btn.textContent = 'Signing in…'; btn.disabled = true;
+    if (!email || !pass) { errEl.textContent='Please enter email and password.'; errEl.style.display='block'; return; }
+    btn.textContent='Signing in…'; btn.disabled=true;
     try {
       await signInWithEmailAndPassword(auth, email, pass);
-      errEl.style.display = 'none';
+      errEl.style.display='none';
     } catch(e) {
       const msgs = {
-        'auth/user-not-found': 'No account with this email.',
-        'auth/wrong-password': 'Incorrect password.',
-        'auth/invalid-email':  'Invalid email address.',
-        'auth/invalid-credential': 'Invalid email or password.',
-        'auth/too-many-requests': 'Too many attempts. Try again later.'
+        'auth/user-not-found':'No account with this email.',
+        'auth/wrong-password':'Incorrect password.',
+        'auth/invalid-email':'Invalid email address.',
+        'auth/invalid-credential':'Invalid email or password.',
+        'auth/too-many-requests':'Too many attempts. Try again later.'
       };
-      errEl.textContent = msgs[e.code] || 'Login failed. Check your credentials.';
-      errEl.style.display = 'block';
-    } finally { btn.textContent = 'Sign In'; btn.disabled = false; }
-  };
+      errEl.textContent = msgs[e.code] || 'Login failed. Please check your credentials.';
+      errEl.style.display='block';
+    } finally { btn.textContent='Sign In'; btn.disabled=false; }
+  }
 
-  window.doLogout = async function() {
+  // ── LOGOUT ───────────────────────────────────────────
+  async function doLogoutFn() {
     await signOut(auth);
-  };
+  }
 
-  // Wire up login button and enter key (module loads async so we do it here, not via onclick="")
+  // Wire up buttons after DOM ready
   document.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('li-btn')?.addEventListener('click', () => window.doLogin());
-    document.getElementById('li-pass')?.addEventListener('keydown', e => {
-      if (e.key === 'Enter') window.doLogin();
-    });
-    document.getElementById('li-email')?.addEventListener('keydown', e => {
-      if (e.key === 'Enter') document.getElementById('li-pass').focus();
-    });
+    document.getElementById('li-btn').addEventListener('click', doLoginFn);
+    document.getElementById('logout-btn').addEventListener('click', doLogoutFn);
+    document.getElementById('li-pass').addEventListener('keydown', e => { if(e.key==='Enter') doLoginFn(); });
+    document.getElementById('li-email').addEventListener('keydown', e => { if(e.key==='Enter') document.getElementById('li-pass').focus(); });
   });
 </script>
+
 <style>
   :root {
     --navy:#0a1628;--navy2:#0f1e38;--navy3:#162544;--navy4:#1d2f52;--navy5:#243660;
@@ -347,8 +325,11 @@
   @media(max-width:860px){.layout{grid-template-columns:1fr;}.sidebar{display:none;}.page{padding:20px 16px;}.metrics-row{grid-template-columns:repeat(2,1fr);}.form-grid{grid-template-columns:1fr;}}
 
   /* ── LOGIN SCREEN ── */
-  .login-box{width:100%;max-width:400px;padding:44px 40px;background:var(--navy2);border:1px solid var(--border2);border-radius:var(--radius-xl);box-shadow:0 20px 60px rgba(0,0,0,0.5);}
-  .login-logo{margin-bottom:28px;}
+  #login-screen{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:var(--navy);z-index:9999;}
+  #login-screen::before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(0,180,255,0.025) 1px,transparent 1px),linear-gradient(90deg,rgba(0,180,255,0.025) 1px,transparent 1px);background-size:44px 44px;pointer-events:none;}
+  .login-box{position:relative;width:100%;max-width:400px;padding:44px 40px;background:var(--navy2);border:1px solid var(--border2);border-radius:var(--radius-xl);box-shadow:0 20px 60px rgba(0,0,0,0.5);}
+  .login-logo{margin-bottom:28px;text-align:center;}
+  .login-logo img{height:48px;width:auto;}
   .login-title{font-family:"Syne",sans-serif;font-size:22px;font-weight:700;color:var(--text);text-align:center;margin-bottom:6px;}
   .login-sub{font-size:12px;color:var(--text3);text-align:center;margin-bottom:28px;}
   .login-err{display:none;padding:11px 16px;background:var(--red-dim);border:1px solid rgba(255,77,106,0.35);border-radius:var(--radius-sm);color:var(--red);font-size:12px;margin-bottom:20px;text-align:center;}
@@ -367,11 +348,11 @@
 </head>
 <body>
 
-<!-- ===== LOGIN SCREEN ===== -->
-<div id="login-screen" style="display:flex;position:fixed;inset:0;align-items:center;justify-content:center;background:var(--navy);z-index:9999;">
+<!-- LOGIN SCREEN -->
+<div id="login-screen">
   <div class="login-box">
     <div class="login-logo">
-      <img src="https://i.ibb.co/ZBBjhYs/sib-logo-horizontal-dark.png" alt="Skill in a Box" style="height:48px;width:auto;display:block;margin:0 auto;">
+      <img src="https://i.ibb.co/ZBBjhYs/sib-logo-horizontal-dark.png" alt="Skill in a Box" onerror="this.style.display='none'">
     </div>
     <h1 class="login-title">Trainer Dashboard</h1>
     <p class="login-sub">Sign in to access your workspace</p>
@@ -388,8 +369,9 @@
   </div>
 </div>
 
-<!-- ===== MAIN APP ===== -->
+<!-- MAIN APP (hidden until logged in) -->
 <div id="app-root" style="display:none">
+
 <div class="toast" id="toast"></div>
 <div class="modal-overlay" id="del-modal">
   <div class="modal">
@@ -432,12 +414,12 @@
       </button>
     </nav>
     <div class="sidebar-footer">
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
         <div class="live-chip">Live</div>
-        <div id="fb-status" style="display:inline-flex;align-items:center;gap:5px;background:rgba(0,229,160,0.1);color:var(--green);padding:3px 10px;border-radius:99px;font-size:10px;font-weight:500;border:1px solid rgba(0,229,160,0.2);"><span style="width:5px;height:5px;border-radius:50%;background:var(--green);display:inline-block;"></span>Firebase</div>
+        <div style="display:inline-flex;align-items:center;gap:5px;background:rgba(0,229,160,0.1);color:var(--green);padding:3px 10px;border-radius:99px;font-size:10px;font-weight:500;border:1px solid rgba(0,229,160,0.2)"><span style="width:5px;height:5px;border-radius:50%;background:var(--green);display:inline-block"></span>Firebase</div>
       </div>
       <div class="sidebar-date" id="sidebar-date"></div>
-      <button onclick="doLogout()" class="logout-btn">&#x2192; Sign Out</button>
+      <button class="logout-btn" id="logout-btn">&#x2192; Sign Out</button>
     </div>
   </aside>
 
@@ -651,7 +633,15 @@
 
   </main>
 </div>
+</div><!-- /app-root -->
+
 <script>
+// reports & trainers read from window._reports / window._trainers set by Firestore listeners
+var reports  = [];
+var trainers = [];
+// Override getters so render functions always read latest data
+Object.defineProperty(window,'reports',  {configurable:true,get:function(){return window._reports||[];},set:function(v){window._reports=v;}});
+Object.defineProperty(window,'trainers', {configurable:true,get:function(){return window._trainers||[];},set:function(v){window._trainers=v;}});
 var BENCHMARKS={
   "Live Session":{note:"30 min each",unit:"count",mins:30,cat:"standard"},
   "Message Slot / Revert":{note:"1 hr each",unit:"count",mins:60,cat:"standard"},
@@ -1084,22 +1074,7 @@ function initDashboard(){
   populateDropdowns();addTask();renderDashboard();renderBenchmarks();
   window._dashReady=true;
 }
-// Keep local mirror vars in sync when Firestore listeners update window.reports / window.trainers
-try {
-  Object.defineProperty(window,"reports",{
-    configurable:true,
-    get:function(){return window._reports||[];},
-    set:function(v){window._reports=v;reports=v;}
-  });
-} catch(e){}
-try {
-  Object.defineProperty(window,"trainers",{
-    configurable:true,
-    get:function(){return window._trainers||[];},
-    set:function(v){window._trainers=v;trainers=v;}
-  });
-} catch(e){}
+
 </script>
-</div><!-- /app-root -->
 </body>
 </html>
