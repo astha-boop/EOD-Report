@@ -10,7 +10,7 @@
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
   import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-  import { getFirestore, collection, doc, addDoc, deleteDoc, onSnapshot, query, orderBy, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+  import { getFirestore, enableIndexedDbPersistence, collection, doc, addDoc, deleteDoc, onSnapshot, query, orderBy, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
   const firebaseConfig = {
     apiKey:            "AIzaSyAJncLEkZwdsk5_w_msyrE4wZpZP9fOMr8",
@@ -26,6 +26,13 @@
   const app  = initializeApp(firebaseConfig);
   const auth = getAuth(app);
   const db   = getFirestore(app);
+
+  // Enable offline persistence so data survives page refreshes
+  enableIndexedDbPersistence(db).catch((err) => {
+    console.warn("Firestore persistence unavailable:", err.code);
+    // Not fatal — app still works, just won't cache offline
+  });
+
   const reportsCol  = collection(db, "sib_reports");
   const trainersCol = collection(db, "sib_trainers");
 
@@ -64,24 +71,17 @@
     // Real-time reports listener
     onSnapshot(query(reportsCol, orderBy("timestamp","desc")), snap => {
       window._reports = snap.docs.map(d => ({ _docId: d.id, ...d.data() }));
-      if (window._dashReady) { renderDashboard(); renderHistory(); }
+      if (typeof renderDashboard === 'function') { renderDashboard(); renderHistory(); }
     });
 
-    // Real-time trainers listener
+    // Real-time trainers listener — store and render on every update
     onSnapshot(trainersCol, snap => {
-      if (snap.empty) {
-        Promise.all(DEFAULT_TRAINERS.map(t =>
-          setDoc(doc(db, "sib_trainers", t.name.replace(/\s+/g,"_")), t)
-        ));
-        window._trainers = JSON.parse(JSON.stringify(DEFAULT_TRAINERS));
-      } else {
-        window._trainers = snap.docs.map(d => ({ _docId: d.id, ...d.data() }));
-      }
-      if (window._dashReady) renderTrainers();
+      window._trainers = snap.docs.map(d => ({ _docId: d.id, ...d.data() }));
+      if (typeof renderTrainers === 'function') renderTrainers();
     });
 
-    // Init dashboard UI (slight delay lets DOM settle)
-    setTimeout(() => { initDashboard(); }, 150);
+    // Init dashboard — wait for DOM + Firestore cache to settle
+    setTimeout(() => { initDashboard(); }, 800);
   }
 
   // ── LOGIN ────────────────────────────────────────────
@@ -1076,6 +1076,8 @@ function initDashboard(){
   document.getElementById("sidebar-date").textContent=now.toLocaleDateString("en-IN",{weekday:"long",day:"numeric",month:"short",year:"numeric"});
   populateDropdowns();addTask();renderDashboard();renderBenchmarks();
   window._dashReady=true;
+  // Render with whatever data has arrived by now; listener will re-render if more arrives later
+  renderTrainers();renderHistory();
 }
 
 </script>
