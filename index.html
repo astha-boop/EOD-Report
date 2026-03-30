@@ -636,12 +636,12 @@
 </div><!-- /app-root -->
 
 <script>
-// reports & trainers read from window._reports / window._trainers set by Firestore listeners
-var reports  = [];
-var trainers = [];
-// Override getters so render functions always read latest data
-Object.defineProperty(window,'reports',  {configurable:true,get:function(){return window._reports||[];},set:function(v){window._reports=v;}});
-Object.defineProperty(window,'trainers', {configurable:true,get:function(){return window._trainers||[];},set:function(v){window._trainers=v;}});
+// reports & trainers are live getters — always return latest Firestore data from window._reports / window._trainers
+// Using window properties directly to avoid var-declaration conflicts with Object.defineProperty
+window._reports  = window._reports  || [];
+window._trainers = window._trainers || [];
+function getReports()  { return window._reports;  }
+function getTrainers() { return window._trainers; }
 var BENCHMARKS={
   "Live Session":{note:"30 min each",unit:"count",mins:30,cat:"standard"},
   "Message Slot / Revert":{note:"1 hr each",unit:"count",mins:60,cat:"standard"},
@@ -679,10 +679,8 @@ var DEFAULT_TRAINERS=[
   {name:"AYUSHI RAI",role:"Trainer"},{name:"JAGRATI",role:"Trainer"},{name:"RIYA",role:"Trainer"},
   {name:"DISHA",role:"Trainer"},{name:"RUCHI",role:"Trainer"}
 ];
-// reports & trainers are now populated by Firestore real-time listeners (see <script type="module"> above)
-// These arrays act as local mirrors of Firestore data
-var reports  = window.reports  || [];
-var trainers = window.trainers || [];
+// reports & trainers are populated by Firestore real-time listeners (see <script type="module"> above)
+// DO NOT re-declare these variables — the Object.defineProperty getters above keep them in sync with window._reports / window._trainers
 
 // saveR / saveT are no-ops here; writes go directly via window.saveReport / window.saveTrainerToDb
 function saveR(){ /* handled by Firestore */ }
@@ -726,7 +724,7 @@ function calcMins(task){
 function populateDropdowns(){
   var fSel=document.getElementById("f-trainer");
   var cur=fSel.value;
-  fSel.innerHTML="<option value=\'\'>Select trainer...</option>"+trainers.map(function(t){return"<option value=\'"+t.name+"\'"+( t.name===cur?" selected":"")+">"+t.name+"</option>";}).join("");
+  fSel.innerHTML="<option value=\'\'>Select trainer...</option>"+getTrainers().map(function(t){return"<option value=\'"+t.name+"\'"+( t.name===cur?" selected":"")+">"+t.name+"</option>";}).join("");
 }
 /* REVENUE MODE UI */
 function onRevenueChange(){
@@ -879,6 +877,8 @@ async function submitReport(){
 function renderDashboard(){
   var df=document.getElementById("dash-date").value;
   var tf=document.getElementById("dash-trainer").value;
+  var reports=getReports();
+  var trainers=getTrainers();
   var allT=[...new Set(reports.map(function(r){return r.trainer;}))].sort();
   var sel=document.getElementById("dash-trainer");
   sel.innerHTML="<option value=\'\'>All trainers</option>"+allT.map(function(t){return"<option"+(t===tf?" selected":"")+">"+t+"</option>";}).join("");
@@ -995,6 +995,7 @@ function toggleExpand(rowId,tr){
 function renderHistory(){
   var tf=document.getElementById("hist-trainer").value;
   var df=document.getElementById("hist-date").value;
+  var reports=getReports();
   var allT=[...new Set(reports.map(function(r){return r.trainer;}))].sort();
   var sel=document.getElementById("hist-trainer");
   sel.innerHTML="<option value=\'\'>All trainers</option>"+allT.map(function(t){return"<option"+(t===tf?" selected":"")+">"+t+"</option>";}).join("");
@@ -1033,6 +1034,7 @@ function renderBenchmarks(){
   document.getElementById("bench-calculated").innerHTML=calc.map(function(e){return"<div class=\'bench-item\'><span class=\'bench-name\'>"+e[0]+"</span><span class=\'bench-val\'>"+e[1].note+"</span></div>";}).join("");
 }
 function renderTrainers(){
+  var trainers=getTrainers();
   var grid=document.getElementById("trainer-grid");
   document.getElementById("trainer-count").textContent=trainers.length+" trainer"+(trainers.length!==1?"s":"");
   if(!trainers.length){grid.innerHTML="<div class=\'empty\' style=\'grid-column:1/-1\'><div class=\'empty-icon\'>👤</div><div class=\'empty-title\'>No trainers yet</div>Add your first trainer above</div>";populateDropdowns();return;}
@@ -1041,6 +1043,7 @@ function renderTrainers(){
 }
 var trainerToDelete=-1;
 function confirmRemoveTrainer(i){
+  var trainers=getTrainers();
   trainerToDelete=i;
   document.getElementById("del-modal-msg").textContent="Remove \""+trainers[i].name+"\" from the roster? This cannot be undone.";
   document.getElementById("del-modal").classList.add("open");
@@ -1048,7 +1051,7 @@ function confirmRemoveTrainer(i){
 }
 function doRemoveTrainer(){
   if(trainerToDelete>=0){
-    var t=trainers[trainerToDelete];
+    var t=getTrainers()[trainerToDelete];
     if(t&&t._docId){window.deleteTrainerFromDb(t._docId);}
     else if(t){window.deleteTrainerFromDb(t.name.replace(/\s+/g,"_"));}
     // listener will update trainers[] and re-render
@@ -1061,7 +1064,7 @@ function addTrainer(){
   var roleEl=document.getElementById("new-trainer-role");
   var name=nameEl.value.trim().toUpperCase();
   if(!name){nameEl.focus();return;}
-  if(trainers.find(function(t){return t.name===name;})){showToast("Trainer already exists.");return;}
+  if(getTrainers().find(function(t){return t.name===name;})){showToast("Trainer already exists.");return;}
   var newT={name:name,role:roleEl.value.trim()||"Trainer"};
   window.saveTrainerToDb(newT); // Firestore write; listener will update trainers[]
   nameEl.value="";roleEl.value="";showToast(name+" added!");
